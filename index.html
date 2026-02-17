@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tapprint</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --fg: #e8eef6;
+      --muted: #94a3b8;
+      --panel: rgba(255,255,255,0.06);
+      --panel2: rgba(255,255,255,0.10);
+      --line: rgba(255,255,255,0.35);
+      --accent: rgba(255,255,255,0.9);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+    canvas { width: 100vw; height: 100vh; display: block; touch-action: none; }
+    .hud {
+      position: fixed;
+      left: 12px; right: 12px; top: 12px;
+      display: flex; gap: 10px; align-items: stretch; justify-content: space-between;
+      pointer-events: none;
+    }
+    .card {
+      pointer-events: none;
+      background: var(--panel);
+      border: 1px solid rgba(255,255,255,0.10);
+      backdrop-filter: blur(8px);
+      border-radius: 14px;
+      padding: 10px 12px;
+      min-width: 120px;
+    }
+    .row { display: flex; gap: 10px; }
+    .title { font-weight: 700; letter-spacing: 0.2px; font-size: 14px; opacity: 0.95; }
+    .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .big { font-size: 22px; font-weight: 800; margin-top: 2px; }
+    .pill {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 8px 10px; border-radius: 999px;
+      background: var(--panel2);
+      border: 1px solid rgba(255,255,255,0.12);
+      font-weight: 650; font-size: 12px;
+      color: var(--fg);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .centerMsg {
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      padding: 18px;
+      pointer-events: none;
+      text-align: center;
+    }
+    .centerMsg .box {
+      pointer-events: none;
+      max-width: 720px;
+      width: min(720px, 100%);
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.10);
+      backdrop-filter: blur(10px);
+      border-radius: 18px;
+      padding: 18px 16px;
+    }
+    .centerMsg h1 {
+      margin: 0 0 8px 0;
+      font-size: 20px;
+      letter-spacing: 0.2px;
+    }
+    .centerMsg p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .footer {
+      position: fixed; left: 12px; right: 12px; bottom: 12px;
+      display: flex; gap: 10px; align-items: center; justify-content: space-between;
+      pointer-events: none;
+    }
+    .btn {
+      pointer-events: auto;
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.18);
+      color: var(--fg);
+      border-radius: 14px;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .btn:active { transform: translateY(1px); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="c"></canvas>
+  </div>
+
+  <div class="hud">
+    <div class="row">
+      <div class="card">
+        <div class="title">Tapprint</div>
+        <div class="sub">Make your fingerprint in rhythm</div>
+      </div>
+      <div class="card">
+        <div class="title">Locker</div>
+        <div id="lockerLabel" class="big mono">LKR-UNKNOWN</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <div class="title">Time</div>
+        <div id="timeLeft" class="big mono">08.0</div>
+        <div class="sub">seconds</div>
+      </div>
+      <div class="card">
+        <div class="title">Taps</div>
+        <div id="tapCount" class="big mono">0</div>
+        <div class="sub">in window</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="centerMsg" id="centerMsg">
+    <div class="box">
+      <h1>Tap anywhere for 8 seconds 👆</h1>
+      <p>
+        Your tap timing becomes a “sigil”. No login, no tracking, no permissions.
+        After time’s up, you’ll get a Tapprint Code + locker ID.
+      </p>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="pill" id="statusPill">Ready</div>
+    <button class="btn hidden" id="replayBtn">Play again</button>
+  </div>
+
+<script>
+(() => {
+  // ---------- Utilities: hash + seeded RNG ----------
+  function fnv1a32(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
+
+  function xorshift32(seed) {
+    let x = (seed >>> 0) || 0x12345678;
+    return () => {
+      x ^= x << 13; x >>>= 0;
+      x ^= x >>> 17; x >>>= 0;
+      x ^= x << 5;  x >>>= 0;
+      return (x >>> 0) / 4294967296;
+    };
+  }
+
+  const BASE32 = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/1/I/O
+  function toBase32(num, len=6) {
+    let n = num >>> 0;
+    let out = "";
+    for (let i = 0; i < len; i++) {
+      out = BASE32[n % 32] + out;
+      n = (n / 32) >>> 0;
+    }
+    return out;
+  }
+
+  function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+  // ---------- DOM ----------
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const lockerLabel = document.getElementById("lockerLabel");
+  const timeLeftEl = document.getElementById("timeLeft");
+  const tapCountEl = document.getElementById("tapCount");
+  const centerMsg = document.getElementById("centerMsg");
+  const statusPill = document.getElementById("statusPill");
+  const replayBtn = document.getElementById("replayBtn");
+
+  // ---------- Params ----------
+  const params = new URLSearchParams(location.search);
+  const locker = (params.get("locker") || "LKR-UNKNOWN").trim().slice(0, 48);
+  lockerLabel.textContent = locker;
+
+  // Base seed from locker + day (optional daily vibe). Comment out dayPart for stable forever.
+  const dayPart = new Date().toISOString().slice(0,10); // YYYY-MM-DD
+  const baseSeed = fnv1a32("tapprint|" + locker + "|" + dayPart);
+
+  // ---------- State ----------
+  let W=0, H=0, DPR=1;
+  let taps = []; // {t, x, y}
+  let ripples = []; // {x,y,t0,life}
+  let started = false;
+  let finished = false;
+  let startT = 0;
+  const DURATION = 8000;
+
+  // ---------- Resize ----------
+  function resize() {
+    DPR = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    W = Math.floor(window.innerWidth * DPR);
+    H = Math.floor(window.innerHeight * DPR);
+    canvas.width = W;
+    canvas.height = H;
+  }
+  window.addEventListener("resize", resize, {passive:true});
+  resize();
+
+  // ---------- Input ----------
+  function getPos(ev) {
+    const r = canvas.getBoundingClientRect();
+    const x = (ev.clientX - r.left) / r.width;
+    const y = (ev.clientY - r.top) / r.height;
+    return { x: clamp(x,0,1), y: clamp(y,0,1) };
+  }
+
+  function onTap(ev) {
+    ev.preventDefault();
+    if (finished) return;
+
+    const now = performance.now();
+    const p = getPos(ev);
+
+    if (!started) {
+      started = true;
+      startT = now;
+      taps = [];
+      ripples = [];
+      centerMsg.classList.add("hidden");
+      statusPill.textContent = "Recording…";
+    }
+
+    const t = now - startT;
+    if (t <= DURATION) {
+      taps.push({ t, x: p.x, y: p.y });
+      tapCountEl.textContent = String(taps.length);
+      ripples.push({ x: p.x, y: p.y, t0: now, life: 900 });
+    }
+  }
+
+  // Pointer events for mobile + desktop
+  canvas.addEventListener("pointerdown", onTap, {passive:false});
+
+  // ---------- Render: background ----------
+  function bg(now) {
+    ctx.clearRect(0,0,W,H);
+
+    // subtle gradient-ish noise lines (no external assets)
+    ctx.save();
+    ctx.globalAlpha = 0.8;
+    for (let i=0; i<6; i++){
+      const a = (i/6)*Math.PI*2;
+      const x = W*0.5 + Math.cos(a)*W*0.2;
+      const y = H*0.5 + Math.sin(a)*H*0.2;
+      const g = ctx.createRadialGradient(x,y,0, W*0.5,H*0.5, Math.max(W,H)*0.8);
+      g.addColorStop(0, "rgba(255,255,255,0.04)");
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.fillRect(0,0,W,H);
+    }
+    ctx.restore();
+
+    // vignette
+    ctx.save();
+    const vg = ctx.createRadialGradient(W*0.5,H*0.5, Math.min(W,H)*0.20, W*0.5,H*0.5, Math.max(W,H)*0.65);
+    vg.addColorStop(0, "rgba(0,0,0,0)");
+    vg.addColorStop(1, "rgba(0,0,0,0.70)");
+    ctx.fillStyle = vg;
+    ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+
+  // ---------- Render: ripples ----------
+  function drawRipples(now) {
+    const alive = [];
+    for (const r of ripples) {
+      const age = now - r.t0;
+      if (age > r.life) continue;
+      alive.push(r);
+
+      const k = age / r.life;
+      const cx = r.x * W;
+      const cy = r.y * H;
+      const rad = (20 + k*180) * DPR;
+      const alpha = (1 - k) * 0.25;
+
+      ctx.save();
+      ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+      ctx.lineWidth = (2 + (1-k)*2) * DPR;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    ripples = alive;
+  }
+
+  // ---------- Sigil generation ----------
+  function buildSigil() {
+    // Combine base seed with tap rhythm
+    let rhythm = 0;
+    for (let i=1; i<taps.length; i++){
+      const dt = Math.max(1, taps[i].t - taps[i-1].t);
+      rhythm = (rhythm + (dt|0) * (i+17)) >>> 0;
+    }
+    const tapMix = fnv1a32(JSON.stringify(taps.map(t => [t.t|0, (t.x*999)|0, (t.y*999)|0])));
+    const seed = (baseSeed ^ rhythm ^ tapMix) >>> 0;
+
+    const rand = xorshift32(seed);
+
+    // Parameters influenced by tap count + rhythm
+    const n = clamp(18 + taps.length * 2, 22, 120);
+    const arms = clamp(3 + (taps.length % 7), 3, 9);
+    const tight = clamp(0.35 + (taps.length % 9) * 0.03, 0.35, 0.62);
+
+    // Convert taps to a "pulse curve" (timing only)
+    const times = taps.map(t => t.t);
+    const base = times.length ? times[0] : 0;
+    const normTimes = times.map(t => (t - base) / DURATION);
+    const mean = normTimes.length ? normTimes.reduce((a,b)=>a+b,0)/normTimes.length : 0.5;
+
+    // Build points in polar-ish layout with symmetry "arms"
+    const cx = W*0.5, cy = H*0.5;
+    const R = Math.min(W,H) * 0.28;
+
+    const pts = [];
+    for (let i=0; i<n; i++){
+      const u = i / (n-1);
+      const tPulse = normTimes.length ? normTimes[i % normTimes.length] : u;
+
+      const aBase = (u * Math.PI * 2 * arms) + (mean * Math.PI * 2);
+      const aJit = (rand() - 0.5) * 0.35;
+      const ang = aBase + aJit;
+
+      const wobble = (Math.sin((u*6 + tPulse*3)*Math.PI*2) * 0.16) + (rand()-0.5)*0.12;
+      const r = R * (tight + wobble);
+
+      const x = cx + Math.cos(ang) * r;
+      const y = cy + Math.sin(ang) * r;
+
+      pts.push({x,y,u});
+    }
+
+    // Tapprint code
+    const code = "TP-" + toBase32(seed, 6);
+
+    return { pts, code, seed };
+  }
+
+  function drawSigil(pts, now, intensity=1) {
+    // Draw smooth-ish curve
+    ctx.save();
+    ctx.globalAlpha = 0.85 * intensity;
+    ctx.lineWidth = 2.2 * DPR;
+    ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    ctx.beginPath();
+
+    // Catmull-Rom-ish through points
+    if (pts.length >= 4) {
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i=0; i<pts.length-3; i++){
+        const p0 = pts[i], p1 = pts[i+1], p2 = pts[i+2], p3 = pts[i+3];
+        // cubic bezier approximation
+        const c1x = p1.x + (p2.x - p0.x) / 6;
+        const c1y = p1.y + (p2.y - p0.y) / 6;
+        const c2x = p2.x - (p3.x - p1.x) / 6;
+        const c2y = p2.y - (p3.y - p1.y) / 6;
+        ctx.bezierCurveTo(c1x, c1y, c2x, c2y, p2.x, p2.y);
+      }
+    } else {
+      for (const p of pts) ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
+
+    // Glow dots
+    ctx.globalAlpha = 0.18 * intensity;
+    for (let i=0; i<pts.length; i+=2){
+      const p = pts[i];
+      const rad = (6 + 6*Math.sin((now/600) + i)) * DPR;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(2*DPR, rad*0.4), 0, Math.PI*2);
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // ---------- Finish screen ----------
+  function showResult(code) {
+    statusPill.textContent = "Done";
+    replayBtn.classList.remove("hidden");
+    centerMsg.classList.remove("hidden");
+    centerMsg.querySelector("h1").textContent = "Your Tapprint is ready ✅";
+    centerMsg.querySelector("p").innerHTML = `
+      <span class="mono" style="color: rgba(255,255,255,0.92); font-weight:800;">${code}</span><br/>
+      Locker: <span class="mono" style="color: rgba(255,255,255,0.86); font-weight:700;">${escapeHtml(locker)}</span><br/>
+      <span style="opacity:0.95;">Internal use only (Office locker label)</span><br/>
+      <span style="color: rgba(148,163,184,0.95);">If anything looks wrong: contact HR/Admin desk.</span>
+    `;
+  }
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+  }
+
+  // ---------- Replay ----------
+  replayBtn.addEventListener("click", () => {
+    started = false;
+    finished = false;
+    taps = [];
+    ripples = [];
+    startT = 0;
+    tapCountEl.textContent = "0";
+    timeLeftEl.textContent = "08.0";
+    statusPill.textContent = "Ready";
+    replayBtn.classList.add("hidden");
+    centerMsg.classList.remove("hidden");
+    centerMsg.querySelector("h1").textContent = "Tap anywhere for 8 seconds 👆";
+    centerMsg.querySelector("p").textContent =
+      "Your tap timing becomes a “sigil”. No login, no tracking, no permissions. After time’s up, you’ll get a Tapprint Code + locker ID.";
+  });
+
+  // ---------- Main loop ----------
+  let sigil = null;
+  let sigilBorn = 0;
+
+  function tick(now) {
+    bg(now);
+
+    // Timer UI
+    let left = DURATION;
+    if (started && !finished) {
+      const t = now - startT;
+      left = clamp(DURATION - t, 0, DURATION);
+      if (t >= DURATION) {
+        finished = true;
+        sigil = buildSigil();
+        sigilBorn = now;
+        showResult(sigil.code);
+      }
+    }
+    timeLeftEl.textContent = (left/1000).toFixed(1).padStart(4, "0");
+
+    // Draw ripples while recording
+    drawRipples(now);
+
+    // Draw sigil after finish (with a tiny fade-in)
+    if (finished && sigil) {
+      const k = clamp((now - sigilBorn) / 900, 0, 1);
+      drawSigil(sigil.pts, now, k);
+    }
+
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+})();
+</script>
+</body>
+</html>
